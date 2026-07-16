@@ -60,11 +60,18 @@ export function isValidEmail(v: string): boolean {
   return EMAIL_RE.test(v.trim());
 }
 
-/** A row is ready to send when it isn't excluded, matched, and has a valid email. */
+/**
+ * A row is ready to send when it isn't excluded, we read an ID number from the
+ * PDF (needed as the password), and it has a valid destination email.
+ *
+ * Note: this does NOT require an Excel match. A "Not found" PDF (person absent
+ * from the sheet) still sends if the user manually supplies a valid email and
+ * leaves it included — the name/ID come from the PDF itself.
+ */
 export function isSendable(row: MatchRow): boolean {
   return (
     !row.excluded &&
-    row.status === "matched" &&
+    !!normaliseId(row.pdf.fields?.idNo ?? "") &&
     isValidEmail(effectiveEmail(row))
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import type { MatchRow } from "@/lib/types";
-import { effectiveEmail, isValidEmail } from "@/lib/match";
+import { effectiveEmail, isValidEmail, isSendable } from "@/lib/match";
 
 interface MatcherGridProps {
   rows: MatchRow[];
@@ -175,7 +175,7 @@ export default function MatcherGrid({
             <th>
               ID No. <span className="font-normal normal-case text-slate-400">(Excel / PDF)</span>
             </th>
-            <th>Email (Excel)</th>
+            <th>Email</th>
             <th>File</th>
             <th>Send</th>
           </tr>
@@ -192,6 +192,14 @@ export default function MatcherGrid({
               >
                 <td className="px-3 py-2">
                   <StatusBadge row={row} />
+                  {row.status === "notfound" && isSendable(row) && (
+                    <span
+                      className="mt-1 block text-[10px] font-semibold text-blue-600"
+                      title="Not in the Excel sheet, but a valid email was added — this will send"
+                    >
+                      → will send (manual)
+                    </span>
+                  )}
                   {row.pdf.fields?.idNo &&
                     sentIds.has(normId(row.pdf.fields.idNo)) && (
                       <span className="mt-1 block text-[10px] font-semibold text-emerald-600">
