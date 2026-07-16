@@ -14,6 +14,7 @@ import {
   saveOverrides,
   saveMapOverride,
   saveSendLog,
+  storageAvailable,
   clearAll,
 } from "@/lib/store";
 import {
@@ -52,15 +53,20 @@ interface SendResult {
 /** Persist `value` to IndexedDB (debounced), but only after initial hydration. */
 function useDebouncedSave<T>(
   value: T,
-  save: (v: T) => void,
+  save: (v: T) => Promise<void>,
   ready: boolean,
-  delay = 500,
+  onResult: (ok: boolean) => void,
+  delay = 400,
 ) {
   useEffect(() => {
     if (!ready) return;
-    const t = setTimeout(() => save(value), delay);
+    const t = setTimeout(() => {
+      save(value)
+        .then(() => onResult(true))
+        .catch(() => onResult(false));
+    }, delay);
     return () => clearTimeout(t);
-  }, [value, save, ready, delay]);
+  }, [value, save, ready, onResult, delay]);
 }
 
 export default function Home() {
@@ -75,20 +81,35 @@ export default function Home() {
   const [results, setResults] = useState<SendResult[] | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [dupNotice, setDupNotice] = useState<string | null>(null);
+  const [storageOk, setStorageOk] = useState<boolean | null>(null);
+  const [lastSaved, setLastSaved] = useState<number | null>(null);
+
+  const onSaveResult = useCallback((ok: boolean) => {
+    setStorageOk(ok);
+    if (ok) setLastSaved(Date.now());
+  }, []);
 
   // --- Rehydrate from IndexedDB on first mount ---------------------------
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const s = await loadState();
-      if (cancelled) return;
-      setPdfs(s.pdfs);
-      setExcelData(s.excel);
-      setMapOverride(s.mapOverride);
-      setOverrides(s.overrides);
-      if (s.template) setTemplate(s.template);
-      setSendLog(s.sendLog);
-      setHydrated(true);
+      try {
+        const ok = await storageAvailable();
+        if (!cancelled) setStorageOk(ok);
+        const s = await loadState();
+        if (cancelled) return;
+        setPdfs(s.pdfs);
+        setExcelData(s.excel);
+        setMapOverride(s.mapOverride);
+        setOverrides(s.overrides);
+        if (s.template) setTemplate(s.template);
+        setSendLog(s.sendLog);
+      } catch {
+        if (!cancelled) setStorageOk(false);
+      } finally {
+        // Always mark hydrated so saving still works even if the load failed.
+        if (!cancelled) setHydrated(true);
+      }
     })();
     return () => {
       cancelled = true;
@@ -96,12 +117,12 @@ export default function Home() {
   }, []);
 
   // --- Persist each slice as it changes (after hydration) ----------------
-  useDebouncedSave(pdfs, savePdfs, hydrated);
-  useDebouncedSave(excelData, saveExcel, hydrated);
-  useDebouncedSave(mapOverride, saveMapOverride, hydrated);
-  useDebouncedSave(overrides, saveOverrides, hydrated);
-  useDebouncedSave(template, saveTemplate, hydrated);
-  useDebouncedSave(sendLog, saveSendLog, hydrated);
+  useDebouncedSave(pdfs, savePdfs, hydrated, onSaveResult);
+  useDebouncedSave(excelData, saveExcel, hydrated, onSaveResult);
+  useDebouncedSave(mapOverride, saveMapOverride, hydrated, onSaveResult);
+  useDebouncedSave(overrides, saveOverrides, hydrated, onSaveResult);
+  useDebouncedSave(template, saveTemplate, hydrated, onSaveResult);
+  useDebouncedSave(sendLog, saveSendLog, hydrated, onSaveResult);
 
   // --- Loaders -----------------------------------------------------------
   // Identity signature for a file — catches the same file loaded twice.
@@ -362,9 +383,20 @@ export default function Home() {
             recipient&apos;s ID number, and send — all verified before a single
             email goes out.
           </p>
-          <p className="mt-1 text-xs text-slate-400">
-            Loaded data is saved in this browser and survives refresh.
-          </p>
+          {storageOk === false ? (
+            <p className="mt-1 text-xs font-medium text-rose-600">
+              ⚠ This browser isn&apos;t saving data (private/incognito mode, or
+              storage blocked). Your work will be lost on refresh.
+            </p>
+          ) : (
+            <p className="mt-1 text-xs text-slate-400">
+              Saved in this browser &amp; survives refresh
+              {lastSaved
+                ? ` · last saved ${new Date(lastSaved).toLocaleTimeString()}`
+                : ""}
+              .
+            </p>
+          )}
         </div>
         {(pdfs.length > 0 || excelData || sendLog.length > 0) && (
           <button

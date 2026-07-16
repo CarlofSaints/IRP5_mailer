@@ -1,7 +1,7 @@
 // Local persistence via IndexedDB (idb-keyval). Keeps loaded PDFs, the parsed
 // Excel data, the email template, per-row edits and the send log across page
 // refreshes — no account or server needed. Everything stays on the machine.
-import { get, set, clear } from "idb-keyval";
+import { get, set, del, clear } from "idb-keyval";
 import type { EmailTemplate, PdfDoc, SendLogEntry } from "./types";
 import type { ColMap, ExcelData } from "./excel";
 
@@ -58,3 +58,19 @@ export const saveSendLog = (v: SendLogEntry[]) => set(K.log, v);
 
 /** Wipe all persisted data (the "start over" button). */
 export const clearAll = () => clear();
+
+/**
+ * Can this browser actually persist? Returns false in private/blocked contexts
+ * where IndexedDB throws or silently drops writes.
+ */
+export async function storageAvailable(): Promise<boolean> {
+  try {
+    const probe = `irp5.__probe.${Date.now()}`;
+    await set(probe, 1);
+    const v = await get<number>(probe);
+    await del(probe);
+    return v === 1;
+  } catch {
+    return false;
+  }
+}
