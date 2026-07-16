@@ -9,6 +9,12 @@ interface MatcherGridProps {
   onToggleExclude: (pdfId: string) => void;
   /** Encrypt this row's PDF and download it so the user can test the lock. */
   onPreview: (row: MatchRow) => Promise<void>;
+  /** Normalised ID numbers that were successfully sent (from the send log). */
+  sentIds: Set<string>;
+}
+
+function normId(v: string): string {
+  return (v ?? "").replace(/\D/g, "");
 }
 
 /** Small paired cell: Excel value on top, PDF value below, with agreement flag. */
@@ -130,6 +136,7 @@ export default function MatcherGrid({
   onEmailChange,
   onToggleExclude,
   onPreview,
+  sentIds,
 }: MatcherGridProps) {
   const [previewingId, setPreviewingId] = useState<string | null>(null);
 
@@ -182,6 +189,12 @@ export default function MatcherGrid({
               >
                 <td className="px-3 py-2">
                   <StatusBadge row={row} />
+                  {row.pdf.fields?.idNo &&
+                    sentIds.has(normId(row.pdf.fields.idNo)) && (
+                      <span className="mt-1 block text-[10px] font-semibold text-emerald-600">
+                        ✓ already sent
+                      </span>
+                    )}
                   {row.pdf.error && (
                     <p className="mt-1 max-w-[10rem] text-[10px] text-rose-500">
                       {row.pdf.error}

@@ -1,10 +1,21 @@
 "use client";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Dropzone from "@/components/Dropzone";
 import MatcherGrid from "@/components/MatcherGrid";
 import EmailComposer from "@/components/EmailComposer";
 import ColumnPicker from "@/components/ColumnPicker";
+import SendLog from "@/components/SendLog";
 import { extractIrp5Fields, encryptPdf, toBase64 } from "@/lib/pdf";
+import {
+  loadState,
+  savePdfs,
+  saveExcel,
+  saveTemplate,
+  saveOverrides,
+  saveMapOverride,
+  saveSendLog,
+  clearAll,
+} from "@/lib/store";
 import {
   parseExcel,
   buildExcelRows,
@@ -26,7 +37,7 @@ import {
   fillTemplate,
   placeholderValues,
 } from "@/lib/email";
-import type { EmailTemplate, PdfDoc } from "@/lib/types";
+import type { EmailTemplate, PdfDoc, SendLogEntry } from "@/lib/types";
 
 interface RowOverride {
   emailOverride?: string;
@@ -38,15 +49,58 @@ interface SendResult {
   error?: string;
 }
 
+/** Persist `value` to IndexedDB (debounced), but only after initial hydration. */
+function useDebouncedSave<T>(
+  value: T,
+  save: (v: T) => void,
+  ready: boolean,
+  delay = 500,
+) {
+  useEffect(() => {
+    if (!ready) return;
+    const t = setTimeout(() => save(value), delay);
+    return () => clearTimeout(t);
+  }, [value, save, ready, delay]);
+}
+
 export default function Home() {
   const [pdfs, setPdfs] = useState<PdfDoc[]>([]);
   const [excelData, setExcelData] = useState<ExcelData | null>(null);
   const [mapOverride, setMapOverride] = useState<Partial<ColMap>>({});
   const [overrides, setOverrides] = useState<Record<string, RowOverride>>({});
   const [template, setTemplate] = useState<EmailTemplate>(DEFAULT_TEMPLATE);
+  const [sendLog, setSendLog] = useState<SendLogEntry[]>([]);
   const [sending, setSending] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [results, setResults] = useState<SendResult[] | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+
+  // --- Rehydrate from IndexedDB on first mount ---------------------------
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const s = await loadState();
+      if (cancelled) return;
+      setPdfs(s.pdfs);
+      setExcelData(s.excel);
+      setMapOverride(s.mapOverride);
+      setOverrides(s.overrides);
+      if (s.template) setTemplate(s.template);
+      setSendLog(s.sendLog);
+      setHydrated(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // --- Persist each slice as it changes (after hydration) ----------------
+  useDebouncedSave(pdfs, savePdfs, hydrated);
+  useDebouncedSave(excelData, saveExcel, hydrated);
+  useDebouncedSave(mapOverride, saveMapOverride, hydrated);
+  useDebouncedSave(overrides, saveOverrides, hydrated);
+  useDebouncedSave(template, saveTemplate, hydrated);
+  useDebouncedSave(sendLog, saveSendLog, hydrated);
 
   // --- Loaders -----------------------------------------------------------
   const handlePdfFiles = useCallback(async (files: File[]) => {
@@ -103,12 +157,37 @@ export default function Home() {
   const sendable = rows.filter(isSendable);
   const previewRow = sendable[0] ?? rows.find((r) => r.status === "matched");
 
+  // Successfully-sent ID numbers (from the persistent log).
+  const sentIds = useMemo(
+    () =>
+      new Set(
+        sendLog.filter((e) => e.ok).map((e) => normaliseId(e.idNo)),
+      ),
+    [sendLog],
+  );
+
+  const notFoundIds = rows
+    .filter((r) => r.status === "notfound")
+    .map((r) => r.pdf.id);
+  const allNotFoundExcluded =
+    notFoundIds.length > 0 &&
+    notFoundIds.every((id) => overrides[id]?.excluded);
+
   const stats = {
     total: rows.length,
     matched: rows.filter((r) => r.status === "matched").length,
     notfound: rows.filter((r) => r.status === "notfound").length,
     sendable: sendable.length,
   };
+
+  const excludeAllNotFound = (exclude: boolean) =>
+    setOverrides((o) => {
+      const next = { ...o };
+      for (const id of notFoundIds) {
+        next[id] = { ...next[id], excluded: exclude };
+      }
+      return next;
+    });
 
   // --- Row actions -------------------------------------------------------
   const onEmailChange = (pdfId: string, email: string) =>
@@ -164,10 +243,12 @@ export default function Home() {
     for (const row of sendable) {
       const to = effectiveEmail(row);
       const password = normaliseId(row.pdf.fields?.idNo ?? "");
+      const values = placeholderValues(row);
+      let ok = false;
+      let error: string | undefined;
       try {
         if (!password) throw new Error("No ID number to use as password.");
         const encrypted = await encryptPdf(row.pdf.file, password);
-        const values = placeholderValues(row);
         const text = fillTemplate(template.body, values);
         const res = await fetch("/api/send", {
           method: "POST",
@@ -183,14 +264,22 @@ export default function Home() {
         });
         const json = await res.json();
         if (!res.ok || !json.ok) throw new Error(json.error ?? "Send failed.");
-        log.push({ email: to, ok: true });
+        ok = true;
       } catch (e) {
-        log.push({
-          email: to,
-          ok: false,
-          error: e instanceof Error ? e.message : "Send failed.",
-        });
+        error = e instanceof Error ? e.message : "Send failed.";
       }
+      log.push({ email: to, ok, error });
+      // Append to the persistent send log.
+      const entry: SendLogEntry = {
+        ts: Date.now(),
+        idNo: password,
+        name: `${values.Name} ${values.Surname}`.trim(),
+        email: to,
+        fileName: row.pdf.fileName,
+        ok,
+        error,
+      };
+      setSendLog((prev) => [...prev, entry]);
       setProgress((p) => ({ ...p, done: p.done + 1 }));
     }
 
@@ -198,15 +287,46 @@ export default function Home() {
     setSending(false);
   };
 
+  const handleStartOver = async () => {
+    if (
+      !confirm(
+        "Clear all loaded PDFs, the Excel sheet, edits and the send log from this browser? This cannot be undone.",
+      )
+    )
+      return;
+    await clearAll();
+    setPdfs([]);
+    setExcelData(null);
+    setMapOverride({});
+    setOverrides({});
+    setSendLog([]);
+    setTemplate(DEFAULT_TEMPLATE);
+    setResults(null);
+  };
+
   // --- Render ------------------------------------------------------------
   return (
     <main className="mx-auto max-w-7xl px-4 py-8">
-      <header className="mb-6">
-        <h1 className="text-2xl font-bold text-slate-900">IRP5 Mailer</h1>
-        <p className="text-sm text-slate-500">
-          Match IRP5 PDFs to staff, password-lock each with the recipient&apos;s
-          ID number, and send — all verified before a single email goes out.
-        </p>
+      <header className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">IRP5 Mailer</h1>
+          <p className="text-sm text-slate-500">
+            Match IRP5 PDFs to staff, password-lock each with the
+            recipient&apos;s ID number, and send — all verified before a single
+            email goes out.
+          </p>
+          <p className="mt-1 text-xs text-slate-400">
+            Loaded data is saved in this browser and survives refresh.
+          </p>
+        </div>
+        {(pdfs.length > 0 || excelData || sendLog.length > 0) && (
+          <button
+            onClick={handleStartOver}
+            className="shrink-0 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-rose-400 hover:text-rose-600"
+          >
+            Start over
+          </button>
+        )}
       </header>
 
       {/* Loaders */}
@@ -289,11 +409,28 @@ export default function Home() {
             </div>
           )}
         </div>
+        {stats.notfound > 0 && (
+          <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            <input
+              id="exclude-notfound"
+              type="checkbox"
+              checked={allNotFoundExcluded}
+              onChange={(e) => excludeAllNotFound(e.target.checked)}
+              className="h-4 w-4 accent-amber-600"
+            />
+            <label htmlFor="exclude-notfound" className="cursor-pointer">
+              Exclude all <strong>{stats.notfound}</strong> &ldquo;Not
+              found&rdquo; PDF{stats.notfound === 1 ? "" : "s"} from sending
+              (they stay listed below)
+            </label>
+          </div>
+        )}
         <MatcherGrid
           rows={rows}
           onEmailChange={onEmailChange}
           onToggleExclude={onToggleExclude}
           onPreview={handlePreview}
+          sentIds={sentIds}
         />
       </section>
 
@@ -348,6 +485,11 @@ export default function Home() {
             </ul>
           </div>
         )}
+      </section>
+
+      {/* Send log (persistent) */}
+      <section className="mt-8">
+        <SendLog entries={sendLog} onClear={() => setSendLog([])} />
       </section>
     </main>
   );

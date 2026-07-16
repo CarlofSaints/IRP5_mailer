@@ -49,3 +49,14 @@ export interface EmailTemplate {
   subject: string;
   body: string; // may contain {Name} {Surname} {ID} placeholders
 }
+
+/** One entry in the persistent send history. */
+export interface SendLogEntry {
+  ts: number; // epoch ms
+  idNo: string;
+  name: string;
+  email: string;
+  fileName: string;
+  ok: boolean;
+  error?: string;
+}
