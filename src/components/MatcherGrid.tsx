@@ -11,6 +11,8 @@ interface MatcherGridProps {
   onPreview: (row: MatchRow) => Promise<void>;
   /** Normalised ID numbers that were successfully sent (from the send log). */
   sentIds: Set<string>;
+  /** Normalised ID numbers appearing on more than one loaded PDF. */
+  dupIdSet: Set<string>;
 }
 
 function normId(v: string): string {
@@ -137,6 +139,7 @@ export default function MatcherGrid({
   onToggleExclude,
   onPreview,
   sentIds,
+  dupIdSet,
 }: MatcherGridProps) {
   const [previewingId, setPreviewingId] = useState<string | null>(null);
 
@@ -193,6 +196,15 @@ export default function MatcherGrid({
                     sentIds.has(normId(row.pdf.fields.idNo)) && (
                       <span className="mt-1 block text-[10px] font-semibold text-emerald-600">
                         ✓ already sent
+                      </span>
+                    )}
+                  {row.pdf.fields?.idNo &&
+                    dupIdSet.has(normId(row.pdf.fields.idNo)) && (
+                      <span
+                        className="mt-1 block text-[10px] font-semibold text-orange-600"
+                        title="This ID number appears on more than one loaded PDF"
+                      >
+                        ⚠ duplicate ID
                       </span>
                     )}
                   {row.pdf.error && (

@@ -74,6 +74,7 @@ export default function Home() {
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [results, setResults] = useState<SendResult[] | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [dupNotice, setDupNotice] = useState<string | null>(null);
 
   // --- Rehydrate from IndexedDB on first mount ---------------------------
   useEffect(() => {
@@ -103,27 +104,45 @@ export default function Home() {
   useDebouncedSave(sendLog, saveSendLog, hydrated);
 
   // --- Loaders -----------------------------------------------------------
-  const handlePdfFiles = useCallback(async (files: File[]) => {
-    const docs: PdfDoc[] = files.map((file) => ({
-      id: crypto.randomUUID(),
-      fileName: file.name,
-      file,
-    }));
-    setPdfs((prev) => [...prev, ...docs]);
-    for (const doc of docs) {
-      try {
-        const fields = await extractIrp5Fields(doc.file);
-        setPdfs((prev) =>
-          prev.map((p) => (p.id === doc.id ? { ...p, fields } : p)),
-        );
-      } catch (e) {
-        const error = e instanceof Error ? e.message : "Failed to read PDF.";
-        setPdfs((prev) =>
-          prev.map((p) => (p.id === doc.id ? { ...p, error } : p)),
-        );
+  // Identity signature for a file — catches the same file loaded twice.
+  const fileSig = (f: File) => `${f.name}|${f.size}|${f.lastModified}`;
+
+  const handlePdfFiles = useCallback(
+    async (files: File[]) => {
+      const existing = new Set(pdfs.map((p) => fileSig(p.file)));
+      const fresh: PdfDoc[] = [];
+      for (const file of files) {
+        const sig = fileSig(file);
+        if (existing.has(sig)) continue; // already loaded (or dup within batch)
+        existing.add(sig);
+        fresh.push({ id: crypto.randomUUID(), fileName: file.name, file });
       }
-    }
-  }, []);
+
+      const skipped = files.length - fresh.length;
+      setDupNotice(
+        skipped > 0
+          ? `Skipped ${skipped} duplicate file${skipped === 1 ? "" : "s"} already loaded.`
+          : null,
+      );
+      if (fresh.length === 0) return;
+
+      setPdfs((prev) => [...prev, ...fresh]);
+      for (const doc of fresh) {
+        try {
+          const fields = await extractIrp5Fields(doc.file);
+          setPdfs((prev) =>
+            prev.map((p) => (p.id === doc.id ? { ...p, fields } : p)),
+          );
+        } catch (e) {
+          const error = e instanceof Error ? e.message : "Failed to read PDF.";
+          setPdfs((prev) =>
+            prev.map((p) => (p.id === doc.id ? { ...p, error } : p)),
+          );
+        }
+      }
+    },
+    [pdfs],
+  );
 
   const handleExcelFile = useCallback(async (files: File[]) => {
     if (!files[0]) return;
@@ -165,6 +184,18 @@ export default function Home() {
       ),
     [sendLog],
   );
+
+  // ID numbers that appear on more than one loaded PDF (possible duplicates).
+  const dupIdSet = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of pdfs) {
+      const id = normaliseId(p.fields?.idNo ?? "");
+      if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    return new Set(
+      [...counts.entries()].filter(([, n]) => n > 1).map(([id]) => id),
+    );
+  }, [pdfs]);
 
   const notFoundIds = rows
     .filter((r) => r.status === "notfound")
@@ -346,12 +377,16 @@ export default function Home() {
                 onClick={() => {
                   setPdfs([]);
                   setOverrides({});
+                  setDupNotice(null);
                 }}
                 className="ml-2 text-rose-500 hover:underline"
               >
                 clear
               </button>
             </p>
+          )}
+          {dupNotice && (
+            <p className="mt-1 text-xs text-amber-600">⚠ {dupNotice}</p>
           )}
         </Dropzone>
 
@@ -431,6 +466,7 @@ export default function Home() {
           onToggleExclude={onToggleExclude}
           onPreview={handlePreview}
           sentIds={sentIds}
+          dupIdSet={dupIdSet}
         />
       </section>
 
