@@ -161,23 +161,23 @@ export default function MatcherGrid({
   }
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+    <div className="max-h-[70vh] overflow-auto rounded-xl border border-slate-200 bg-white shadow-sm">
       <table className="w-full border-collapse text-left">
         <thead>
-          <tr className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-            <th className="px-3 py-2 font-semibold">Status</th>
-            <th className="px-3 py-2 font-semibold">
+          <tr className="text-xs uppercase tracking-wide text-slate-500 [&>th]:sticky [&>th]:top-0 [&>th]:z-10 [&>th]:border-b [&>th]:border-slate-200 [&>th]:bg-slate-50 [&>th]:px-3 [&>th]:py-2 [&>th]:font-semibold">
+            <th>Status</th>
+            <th>
               Name <span className="font-normal normal-case text-slate-400">(Excel / PDF)</span>
             </th>
-            <th className="px-3 py-2 font-semibold">
+            <th>
               Surname <span className="font-normal normal-case text-slate-400">(Excel / PDF)</span>
             </th>
-            <th className="px-3 py-2 font-semibold">
+            <th>
               ID No. <span className="font-normal normal-case text-slate-400">(Excel / PDF)</span>
             </th>
-            <th className="px-3 py-2 font-semibold">Email (Excel)</th>
-            <th className="px-3 py-2 font-semibold">File</th>
-            <th className="px-3 py-2 font-semibold">Send</th>
+            <th>Email (Excel)</th>
+            <th>File</th>
+            <th>Send</th>
           </tr>
         </thead>
         <tbody>
