@@ -7,6 +7,8 @@ interface MatcherGridProps {
   rows: MatchRow[];
   onEmailChange: (pdfId: string, email: string) => void;
   onToggleExclude: (pdfId: string) => void;
+  /** Encrypt this row's PDF and download it so the user can test the lock. */
+  onPreview: (row: MatchRow) => Promise<void>;
 }
 
 /** Small paired cell: Excel value on top, PDF value below, with agreement flag. */
@@ -127,7 +129,19 @@ export default function MatcherGrid({
   rows,
   onEmailChange,
   onToggleExclude,
+  onPreview,
 }: MatcherGridProps) {
+  const [previewingId, setPreviewingId] = useState<string | null>(null);
+
+  const runPreview = async (row: MatchRow) => {
+    setPreviewingId(row.pdf.id);
+    try {
+      await onPreview(row);
+    } finally {
+      setPreviewingId(null);
+    }
+  };
+
   if (rows.length === 0) {
     return (
       <div className="rounded-xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-400">
@@ -202,9 +216,22 @@ export default function MatcherGrid({
                   <EmailCell row={row} onEmailChange={onEmailChange} />
                 </td>
                 <td className="px-3 py-2 max-w-[12rem]">
-                  <span className="truncate text-xs text-slate-400" title={row.pdf.fileName}>
+                  <span
+                    className="block truncate text-xs text-slate-400"
+                    title={row.pdf.fileName}
+                  >
                     {row.pdf.fileName}
                   </span>
+                  {row.pdf.fields?.idNo && (
+                    <button
+                      onClick={() => runPreview(row)}
+                      disabled={previewingId === row.pdf.id}
+                      title="Download a password-locked copy to test it opens with the ID number"
+                      className="mt-1 inline-flex items-center gap-1 rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-600 hover:border-blue-400 hover:text-blue-600 disabled:opacity-50"
+                    >
+                      {previewingId === row.pdf.id ? "Locking…" : "🔒 Test-lock"}
+                    </button>
+                  )}
                 </td>
                 <td className="px-3 py-2">
                   <label className="inline-flex cursor-pointer items-center gap-1 text-xs text-slate-600">

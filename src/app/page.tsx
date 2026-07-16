@@ -3,9 +3,23 @@ import { useCallback, useMemo, useState } from "react";
 import Dropzone from "@/components/Dropzone";
 import MatcherGrid from "@/components/MatcherGrid";
 import EmailComposer from "@/components/EmailComposer";
+import ColumnPicker from "@/components/ColumnPicker";
 import { extractIrp5Fields, encryptPdf, toBase64 } from "@/lib/pdf";
-import { parseExcel, type ExcelParseResult } from "@/lib/excel";
-import { buildMatchRows, effectiveEmail, isSendable, normaliseId } from "@/lib/match";
+import {
+  parseExcel,
+  buildExcelRows,
+  missingCols,
+  type ExcelData,
+  type ColMap,
+  type LogicalCol,
+} from "@/lib/excel";
+import {
+  buildMatchRows,
+  effectiveEmail,
+  isSendable,
+  normaliseId,
+} from "@/lib/match";
+import type { MatchRow } from "@/lib/types";
 import {
   DEFAULT_TEMPLATE,
   bodyToHtml,
@@ -26,7 +40,8 @@ interface SendResult {
 
 export default function Home() {
   const [pdfs, setPdfs] = useState<PdfDoc[]>([]);
-  const [excel, setExcel] = useState<ExcelParseResult | null>(null);
+  const [excelData, setExcelData] = useState<ExcelData | null>(null);
+  const [mapOverride, setMapOverride] = useState<Partial<ColMap>>({});
   const [overrides, setOverrides] = useState<Record<string, RowOverride>>({});
   const [template, setTemplate] = useState<EmailTemplate>(DEFAULT_TEMPLATE);
   const [sending, setSending] = useState(false);
@@ -60,18 +75,30 @@ export default function Home() {
     if (!files[0]) return;
     try {
       const parsed = await parseExcel(files[0]);
-      setExcel(parsed);
+      setExcelData(parsed);
+      setMapOverride({}); // reset manual mapping for the new sheet
     } catch (e) {
       const error = e instanceof Error ? e.message : "Failed to read Excel.";
       alert(error);
     }
   }, []);
 
+  // --- Excel: effective column mapping + rows -----------------------------
+  const mapping: ColMap | null = useMemo(
+    () => (excelData ? { ...excelData.autoMapping, ...mapOverride } : null),
+    [excelData, mapOverride],
+  );
+  const excelRows = useMemo(
+    () => (excelData && mapping ? buildExcelRows(excelData, mapping) : []),
+    [excelData, mapping],
+  );
+  const missing = mapping ? missingCols(mapping) : [];
+
   // --- Derived match rows (overrides applied) ----------------------------
   const rows = useMemo(() => {
-    const base = buildMatchRows(pdfs, excel?.rows ?? []);
+    const base = buildMatchRows(pdfs, excelRows);
     return base.map((r) => ({ ...r, ...overrides[r.pdf.id] }));
-  }, [pdfs, excel, overrides]);
+  }, [pdfs, excelRows, overrides]);
 
   const sendable = rows.filter(isSendable);
   const previewRow = sendable[0] ?? rows.find((r) => r.status === "matched");
@@ -91,6 +118,31 @@ export default function Home() {
       ...o,
       [pdfId]: { ...o[pdfId], excluded: !o[pdfId]?.excluded },
     }));
+
+  const onMapChange = (col: LogicalCol, index: number) =>
+    setMapOverride((m) => ({ ...m, [col]: index }));
+
+  // Encrypt one PDF client-side and download it so the user can confirm it
+  // opens with the ID number (verify in Adobe Reader — same as recipients).
+  const handlePreview = async (row: MatchRow) => {
+    const password = normaliseId(row.pdf.fields?.idNo ?? "");
+    if (!password) {
+      alert("No ID number on this PDF to use as the password.");
+      return;
+    }
+    const encrypted = await encryptPdf(row.pdf.file, password);
+    const blob = new Blob([new Uint8Array(encrypted)], {
+      type: "application/pdf",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `LOCKED_${row.pdf.fileName}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  };
 
   // --- Send --------------------------------------------------------------
   const handleSend = async () => {
@@ -147,8 +199,6 @@ export default function Home() {
   };
 
   // --- Render ------------------------------------------------------------
-  const missingCols = excel?.missing ?? [];
-
   return (
     <main className="mx-auto max-w-7xl px-4 py-8">
       <header className="mb-6">
@@ -187,25 +237,38 @@ export default function Home() {
 
         <Dropzone
           title="2 · Staff Excel sheet"
-          hint={excel ? `${excel.rows.length} rows` : "ID number + email + name + surname"}
+          hint={
+            excelData
+              ? `${excelRows.length} rows`
+              : "ID number + email + name + surname"
+          }
           accept=".xlsx,.xls,.csv"
           onFiles={handleExcelFile}
         >
-          {excel && (
+          {excelData && mapping && (
             <div className="text-xs text-slate-500">
-              <span>{excel.rows.length} rows loaded</span>
-              {missingCols.length > 0 && (
-                <p className="mt-1 text-amber-600">
-                  ⚠ Could not auto-detect column(s): {missingCols.join(", ")}.
-                  Check the header row.
-                </p>
-              )}
+              <span>
+                {excelData.fileName} · {excelRows.length} rows
+              </span>
               <button
-                onClick={() => setExcel(null)}
+                onClick={() => {
+                  setExcelData(null);
+                  setMapOverride({});
+                }}
                 className="ml-2 text-rose-500 hover:underline"
               >
                 clear
               </button>
+              {missing.length > 0 && (
+                <p className="mt-1 text-amber-600">
+                  ⚠ Couldn&apos;t auto-detect: {missing.join(", ")}. Set it below.
+                </p>
+              )}
+              <ColumnPicker
+                headers={excelData.headers}
+                mapping={mapping}
+                onChange={onMapChange}
+              />
             </div>
           )}
         </Dropzone>
@@ -230,6 +293,7 @@ export default function Home() {
           rows={rows}
           onEmailChange={onEmailChange}
           onToggleExclude={onToggleExclude}
+          onPreview={handlePreview}
         />
       </section>
 

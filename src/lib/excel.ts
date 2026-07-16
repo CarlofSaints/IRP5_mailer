@@ -1,5 +1,5 @@
 // Excel parsing with SheetJS. Auto-detects the ID / email / name / surname
-// columns from the header row so the user doesn't have to format the sheet.
+// columns from the header row, but the mapping can be overridden by the user.
 import * as XLSX from "xlsx";
 import type { ExcelRow } from "./types";
 import { normaliseId } from "./match";
@@ -12,12 +12,21 @@ const HEADER_HINTS = {
   name: ["first two names", "full names", "first name", "firstname", "name"],
 } as const;
 
-type LogicalCol = keyof typeof HEADER_HINTS;
+export type LogicalCol = keyof typeof HEADER_HINTS;
+export type ColMap = Record<LogicalCol, number>;
+
+export const LOGICAL_COLS: LogicalCol[] = ["idNo", "email", "surname", "name"];
+
+export const COL_LABELS: Record<LogicalCol, string> = {
+  idNo: "ID No.",
+  email: "Email",
+  surname: "Surname",
+  name: "Name",
+};
 
 function pickColumn(headers: string[], col: LogicalCol): number {
   const lowered = headers.map((h) => (h ?? "").toString().trim().toLowerCase());
   for (const hint of HEADER_HINTS[col]) {
-    // Prefer an exact header match, then a contains-match.
     const exact = lowered.indexOf(hint);
     if (exact >= 0) return exact;
   }
@@ -28,15 +37,15 @@ function pickColumn(headers: string[], col: LogicalCol): number {
   return -1;
 }
 
-export interface ExcelParseResult {
-  rows: ExcelRow[];
+/** Parsed sheet, kept raw so the column mapping can be re-applied on demand. */
+export interface ExcelData {
+  fileName: string;
   headers: string[];
-  mapping: Record<LogicalCol, number>;
-  /** Logical columns we could not locate in the header row. */
-  missing: LogicalCol[];
+  dataRows: unknown[][];
+  autoMapping: ColMap;
 }
 
-export async function parseExcel(file: File): Promise<ExcelParseResult> {
+export async function parseExcel(file: File): Promise<ExcelData> {
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: "array" });
   const sheet = wb.Sheets[wb.SheetNames[0]];
@@ -46,23 +55,29 @@ export async function parseExcel(file: File): Promise<ExcelParseResult> {
     defval: "",
   });
   if (grid.length === 0) {
-    return { rows: [], headers: [], mapping: emptyMapping(), missing: [] };
+    return {
+      fileName: file.name,
+      headers: [],
+      dataRows: [],
+      autoMapping: emptyMapping(),
+    };
   }
 
   const headers = (grid[0] as unknown[]).map((h) => String(h ?? ""));
-  const mapping: Record<LogicalCol, number> = {
+  const dataRows = grid.slice(1) as unknown[][];
+  const autoMapping: ColMap = {
     idNo: pickColumn(headers, "idNo"),
     email: pickColumn(headers, "email"),
     surname: pickColumn(headers, "surname"),
     name: pickColumn(headers, "name"),
   };
-  const missing = (Object.keys(mapping) as LogicalCol[]).filter(
-    (k) => mapping[k] < 0,
-  );
+  return { fileName: file.name, headers, dataRows, autoMapping };
+}
 
+/** Turn the raw rows into normalised ExcelRows using the given column mapping. */
+export function buildExcelRows(data: ExcelData, mapping: ColMap): ExcelRow[] {
   const rows: ExcelRow[] = [];
-  for (let r = 1; r < grid.length; r++) {
-    const cells = grid[r] as unknown[];
+  for (const cells of data.dataRows) {
     const cell = (i: number) => (i >= 0 ? String(cells[i] ?? "").trim() : "");
     const idNo = cell(mapping.idNo);
     const email = cell(mapping.email);
@@ -71,13 +86,17 @@ export async function parseExcel(file: File): Promise<ExcelParseResult> {
     if (!idNo && !email && !surname && !name) continue; // skip blank rows
 
     const raw: Record<string, unknown> = {};
-    headers.forEach((h, i) => (raw[h || `col${i}`] = cells[i]));
+    data.headers.forEach((h, i) => (raw[h || `col${i}`] = cells[i]));
     rows.push({ idNo: normaliseId(idNo), name, surname, email, raw });
   }
-
-  return { rows, headers, mapping, missing };
+  return rows;
 }
 
-function emptyMapping(): Record<LogicalCol, number> {
+/** Logical columns not mapped to any sheet column. */
+export function missingCols(mapping: ColMap): LogicalCol[] {
+  return LOGICAL_COLS.filter((k) => mapping[k] < 0);
+}
+
+function emptyMapping(): ColMap {
   return { idNo: -1, email: -1, surname: -1, name: -1 };
 }
