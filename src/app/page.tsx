@@ -96,11 +96,13 @@ export default function Home() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      let restored: PdfDoc[] = [];
       try {
         const ok = await storageAvailable();
         if (!cancelled) setStorageOk(ok);
         const s = await loadState();
         if (cancelled) return;
+        restored = s.pdfs;
         setPdfs(s.pdfs);
         setExcelData(s.excel);
         setMapOverride(s.mapOverride);
@@ -112,6 +114,25 @@ export default function Home() {
       } finally {
         // Always mark hydrated so saving still works even if the load failed.
         if (!cancelled) setHydrated(true);
+      }
+
+      // Self-heal: PDFs cached before passport support have fields without a
+      // `passportNo` property. Re-extract those so passports appear without a
+      // manual reload.
+      for (const doc of restored) {
+        if (cancelled) return;
+        const stale =
+          !doc.error && (!doc.fields || doc.fields.passportNo === undefined);
+        if (!stale) continue;
+        try {
+          const fields = await extractIrp5Fields(doc.file);
+          if (cancelled) return;
+          setPdfs((prev) =>
+            prev.map((p) => (p.id === doc.id ? { ...p, fields } : p)),
+          );
+        } catch {
+          /* leave the row as-is */
+        }
       }
     })();
     return () => {

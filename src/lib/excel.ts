@@ -2,7 +2,6 @@
 // columns from the header row, but the mapping can be overridden by the user.
 import * as XLSX from "xlsx";
 import type { ExcelRow } from "./types";
-import { normaliseId } from "./match";
 
 /** Header keywords, in priority order, for each logical column. */
 const HEADER_HINTS = {
@@ -133,7 +132,8 @@ export function buildExcelRows(data: ExcelData, mapping: ColMap): ExcelRow[] {
 
     const raw: Record<string, unknown> = {};
     data.headers.forEach((h, i) => (raw[h || `col${i}`] = cells[i]));
-    rows.push({ idNo: normaliseId(idNo), name, surname, email, raw });
+    // Keep the identifier raw (trimmed) — could be an SA ID or a passport.
+    rows.push({ idNo: idNo.trim(), name, surname, email, raw });
   }
   return rows;
 }

@@ -7,6 +7,26 @@ export function normaliseId(v: string): string {
   return (v ?? "").replace(/\D/g, "");
 }
 
+/**
+ * Canonical key for matching / dedup / sent-tracking. Uppercase, alphanumeric
+ * only — so it works for SA IDs (digits) AND passports ("FN298860"), ignoring
+ * spaces/dashes.
+ */
+export function idKey(v: string): string {
+  return (v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+/** The value used to match a PDF to the Excel sheet: ID, else passport, else alt ID. */
+export function pdfMatchValue(fields?: {
+  idNo?: string;
+  passportNo?: string;
+  altIdNo?: string;
+}): string {
+  return (
+    (fields?.idNo || fields?.passportNo || fields?.altIdNo || "").trim()
+  );
+}
+
 /** Loose name comparison: case-insensitive, whitespace-collapsed. */
 function nameEq(a: string, b: string): boolean {
   const clean = (s: string) =>
@@ -26,15 +46,18 @@ export function buildMatchRows(
 ): MatchRow[] {
   const byId = new Map<string, ExcelRow>();
   for (const row of excelRows) {
-    if (row.idNo) byId.set(row.idNo, row);
+    const key = idKey(row.idNo);
+    if (key) byId.set(key, row);
   }
 
   return pdfs.map((pdf) => {
     const f = pdf.fields;
-    const pdfId = normaliseId(f?.idNo ?? "");
-    const excel = pdfId ? byId.get(pdfId) : undefined;
+    // Match on the PDF's ID number OR passport / alternate ID.
+    const matchVal = pdfMatchValue(f);
+    const key = idKey(matchVal);
+    const excel = key ? byId.get(key) : undefined;
 
-    const idMatch = !!excel && normaliseId(excel.idNo) === pdfId && !!pdfId;
+    const idMatch = !!excel && idKey(excel.idNo) === key && !!key;
     const surnameMatch = !!excel && nameEq(excel.surname, f?.surname ?? "");
     const nameMatch = !!excel && nameEq(excel.name, f?.fullNames ?? "");
 
@@ -82,10 +105,6 @@ export function lockIdentifier(row: MatchRow): LockIdentifier {
   return { value: "", source: "none" };
 }
 
-/** Canonical key for dedup / sent-tracking — works for digits and passports. */
-export function idKey(value: string): string {
-  return (value ?? "").trim().toUpperCase();
-}
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export function isValidEmail(v: string): boolean {
