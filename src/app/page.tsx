@@ -270,11 +270,26 @@ export default function Home() {
     setResults(null);
     setProgress({ done: 0, total: sendable.length });
     const log: SendResult[] = [];
+    // Hard guard: at most one successful email per ID number, per run.
+    // Rows are in load order, so the first-loaded copy is the one that sends.
+    const sentThisRun = new Set<string>();
 
     for (const row of sendable) {
       const to = effectiveEmail(row);
       const password = normaliseId(row.pdf.fields?.idNo ?? "");
       const values = placeholderValues(row);
+
+      if (password && sentThisRun.has(password)) {
+        // A copy of this ID already went out this run — skip, don't re-send.
+        log.push({
+          email: to,
+          ok: false,
+          error: "Skipped — duplicate ID (first copy already sent)",
+        });
+        setProgress((p) => ({ ...p, done: p.done + 1 }));
+        continue;
+      }
+
       let ok = false;
       let error: string | undefined;
       try {
@@ -299,8 +314,9 @@ export default function Home() {
       } catch (e) {
         error = e instanceof Error ? e.message : "Send failed.";
       }
+      if (ok && password) sentThisRun.add(password);
       log.push({ email: to, ok, error });
-      // Append to the persistent send log.
+      // Append to the persistent send log (actual send attempts only).
       const entry: SendLogEntry = {
         ts: Date.now(),
         idNo: password,
@@ -403,7 +419,9 @@ export default function Home() {
           {excelData && mapping && (
             <div className="text-xs text-slate-500">
               <span>
-                {excelData.fileName} · {excelRows.length} rows
+                {excelData.fileName}
+                {excelData.sheetName ? ` · sheet “${excelData.sheetName}”` : ""} ·{" "}
+                {excelRows.length} rows
               </span>
               <button
                 onClick={() => {
@@ -509,15 +527,31 @@ export default function Home() {
           <div className="mt-3 border-t border-slate-100 pt-3 text-xs">
             <p className="mb-1 font-semibold text-slate-700">
               {results.filter((r) => r.ok).length} sent ·{" "}
-              {results.filter((r) => !r.ok).length} failed
+              {results.filter((r) => !r.ok && r.error?.startsWith("Skipped"))
+                .length}{" "}
+              skipped ·{" "}
+              {
+                results.filter(
+                  (r) => !r.ok && !r.error?.startsWith("Skipped"),
+                ).length
+              }{" "}
+              failed
             </p>
             <ul className="max-h-32 space-y-0.5 overflow-y-auto">
-              {results.map((r, i) => (
-                <li key={i} className={r.ok ? "text-emerald-600" : "text-rose-600"}>
-                  {r.ok ? "✓" : "✗"} {r.email}
-                  {r.error ? ` — ${r.error}` : ""}
-                </li>
-              ))}
+              {results.map((r, i) => {
+                const skipped = !r.ok && r.error?.startsWith("Skipped");
+                const cls = r.ok
+                  ? "text-emerald-600"
+                  : skipped
+                    ? "text-amber-600"
+                    : "text-rose-600";
+                return (
+                  <li key={i} className={cls}>
+                    {r.ok ? "✓" : skipped ? "⊘" : "✗"} {r.email}
+                    {r.error ? ` — ${r.error}` : ""}
+                  </li>
+                );
+              })}
             </ul>
           </div>
         )}

@@ -31,15 +31,34 @@ function pickColumn(headers: string[], col: LogicalCol): number {
     if (exact >= 0) return exact;
   }
   for (const hint of HEADER_HINTS[col]) {
-    const idx = lowered.findIndex((h) => h.includes(hint));
+    const idx = lowered.findIndex((h) => {
+      if (!h.includes(hint)) return false;
+      // "name" must not swallow a "surname" column via the contains check.
+      if (col === "name" && h.includes("surname")) return false;
+      return true;
+    });
     if (idx >= 0) return idx;
   }
   return -1;
 }
 
+function autoMap(headers: string[]): ColMap {
+  return {
+    idNo: pickColumn(headers, "idNo"),
+    email: pickColumn(headers, "email"),
+    surname: pickColumn(headers, "surname"),
+    name: pickColumn(headers, "name"),
+  };
+}
+
+function mapScore(m: ColMap): number {
+  return LOGICAL_COLS.filter((c) => m[c] >= 0).length;
+}
+
 /** Parsed sheet, kept raw so the column mapping can be re-applied on demand. */
 export interface ExcelData {
   fileName: string;
+  sheetName: string;
   headers: string[];
   dataRows: unknown[][];
   autoMapping: ColMap;
@@ -48,30 +67,57 @@ export interface ExcelData {
 export async function parseExcel(file: File): Promise<ExcelData> {
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: "array" });
-  const sheet = wb.Sheets[wb.SheetNames[0]];
-  const grid = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
-    header: 1,
-    blankrows: false,
-    defval: "",
-  });
-  if (grid.length === 0) {
+
+  // Workbooks may have several sheets (e.g. an instructions/lookup sheet plus
+  // the real data). Score every sheet by how many of our columns its header
+  // row maps, and pick the best — falling back to the one with the most rows.
+  let best: {
+    sheetName: string;
+    headers: string[];
+    dataRows: unknown[][];
+    autoMapping: ColMap;
+    score: number;
+  } | null = null;
+
+  for (const sheetName of wb.SheetNames) {
+    const grid = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[sheetName], {
+      header: 1,
+      blankrows: false,
+      defval: "",
+    });
+    if (grid.length === 0) continue;
+    const headers = (grid[0] as unknown[]).map((h) => String(h ?? ""));
+    const dataRows = grid.slice(1) as unknown[][];
+    const autoMapping = autoMap(headers);
+    const score = mapScore(autoMapping);
+    const candidate = { sheetName, headers, dataRows, autoMapping, score };
+    if (
+      !best ||
+      candidate.score > best.score ||
+      (candidate.score === best.score &&
+        candidate.dataRows.length > best.dataRows.length)
+    ) {
+      best = candidate;
+    }
+  }
+
+  if (!best) {
     return {
       fileName: file.name,
+      sheetName: wb.SheetNames[0] ?? "",
       headers: [],
       dataRows: [],
       autoMapping: emptyMapping(),
     };
   }
 
-  const headers = (grid[0] as unknown[]).map((h) => String(h ?? ""));
-  const dataRows = grid.slice(1) as unknown[][];
-  const autoMapping: ColMap = {
-    idNo: pickColumn(headers, "idNo"),
-    email: pickColumn(headers, "email"),
-    surname: pickColumn(headers, "surname"),
-    name: pickColumn(headers, "name"),
+  return {
+    fileName: file.name,
+    sheetName: best.sheetName,
+    headers: best.headers,
+    dataRows: best.dataRows,
+    autoMapping: best.autoMapping,
   };
-  return { fileName: file.name, headers, dataRows, autoMapping };
 }
 
 /** Turn the raw rows into normalised ExcelRows using the given column mapping. */
