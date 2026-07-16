@@ -3,6 +3,8 @@
 /** Fields extracted from a single IRP5 PDF's XFA datasets. */
 export interface Irp5Fields {
   idNo: string;
+  passportNo: string;
+  altIdNo: string;
   surname: string;
   fullNames: string;
   initials: string;
@@ -36,6 +38,8 @@ export interface MatchRow {
   status: MatchStatus;
   /** User override for the destination email address. */
   emailOverride?: string;
+  /** User override for the PDF open-password (edge cases with no identifier). */
+  passwordOverride?: string;
   /** Whether the user has excluded this row from the send. */
   excluded: boolean;
   // Field-level agreement flags (PDF vs Excel), for eyeball verification.
@@ -53,7 +57,7 @@ export interface EmailTemplate {
 /** One entry in the persistent send history. */
 export interface SendLogEntry {
   ts: number; // epoch ms
-  idNo: string;
+  identifier: string; // whatever was used as the open-password (ID/passport/…)
   name: string;
   email: string;
   fileName: string;

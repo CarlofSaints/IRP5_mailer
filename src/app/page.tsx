@@ -30,6 +30,8 @@ import {
   effectiveEmail,
   isSendable,
   normaliseId,
+  lockIdentifier,
+  idKey,
 } from "@/lib/match";
 import type { MatchRow } from "@/lib/types";
 import {
@@ -42,6 +44,7 @@ import type { EmailTemplate, PdfDoc, SendLogEntry } from "@/lib/types";
 
 interface RowOverride {
   emailOverride?: string;
+  passwordOverride?: string;
   excluded?: boolean;
 }
 interface SendResult {
@@ -197,26 +200,24 @@ export default function Home() {
   const sendable = rows.filter(isSendable);
   const previewRow = sendable[0] ?? rows.find((r) => r.status === "matched");
 
-  // Successfully-sent ID numbers (from the persistent log).
+  // Successfully-sent identifiers (from the persistent log).
   const sentIds = useMemo(
     () =>
-      new Set(
-        sendLog.filter((e) => e.ok).map((e) => normaliseId(e.idNo)),
-      ),
+      new Set(sendLog.filter((e) => e.ok).map((e) => idKey(e.identifier))),
     [sendLog],
   );
 
-  // ID numbers that appear on more than one loaded PDF (possible duplicates).
+  // Identifiers that appear on more than one loaded PDF (possible duplicates).
   const dupIdSet = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const p of pdfs) {
-      const id = normaliseId(p.fields?.idNo ?? "");
-      if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+    for (const row of rows) {
+      const key = idKey(lockIdentifier(row).value);
+      if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
     }
     return new Set(
       [...counts.entries()].filter(([, n]) => n > 1).map(([id]) => id),
     );
-  }, [pdfs]);
+  }, [rows]);
 
   const notFoundIds = rows
     .filter((r) => r.status === "notfound")
@@ -225,11 +226,29 @@ export default function Home() {
     notFoundIds.length > 0 &&
     notFoundIds.every((id) => overrides[id]?.excluded);
 
+  const hasPdfId = (r: MatchRow) => !!normaliseId(r.pdf.fields?.idNo ?? "");
   const stats = {
     total: rows.length,
     matched: rows.filter((r) => r.status === "matched").length,
     notfound: rows.filter((r) => r.status === "notfound").length,
     sendable: sendable.length,
+  };
+
+  // Explicit breakdown for the summary banner.
+  const summary = {
+    // Found in Excel by ID.
+    matchedInExcel: rows.filter((r) => r.status === "matched").length,
+    // Have a PDF ID but weren't in the sheet — sending via a manual email.
+    notInExcelWillSend: rows.filter(
+      (r) => r.status === "notfound" && hasPdfId(r) && isSendable(r),
+    ).length,
+    // No ID at all (foreign nationals etc.) — sending via manual email,
+    // locked with passport / alternate ID / a manual password.
+    noIdWillSend: rows.filter((r) => !hasPdfId(r) && isSendable(r)).length,
+    // Not-in-Excel / no-ID rows that still need an email before they'll send.
+    pendingEmail: rows.filter(
+      (r) => r.status === "notfound" && !r.excluded && !isSendable(r),
+    ).length,
   };
 
   const excludeAllNotFound = (exclude: boolean) =>
@@ -244,6 +263,11 @@ export default function Home() {
   // --- Row actions -------------------------------------------------------
   const onEmailChange = (pdfId: string, email: string) =>
     setOverrides((o) => ({ ...o, [pdfId]: { ...o[pdfId], emailOverride: email } }));
+  const onPasswordChange = (pdfId: string, password: string) =>
+    setOverrides((o) => ({
+      ...o,
+      [pdfId]: { ...o[pdfId], passwordOverride: password },
+    }));
   const onToggleExclude = (pdfId: string) =>
     setOverrides((o) => ({
       ...o,
@@ -256,9 +280,11 @@ export default function Home() {
   // Encrypt one PDF client-side and download it so the user can confirm it
   // opens with the ID number (verify in Adobe Reader — same as recipients).
   const handlePreview = async (row: MatchRow) => {
-    const password = normaliseId(row.pdf.fields?.idNo ?? "");
+    const password = lockIdentifier(row).value;
     if (!password) {
-      alert("No ID number on this PDF to use as the password.");
+      alert(
+        "No identifier on this PDF to use as the password. Click the ID field to add one.",
+      );
       return;
     }
     const encrypted = await encryptPdf(row.pdf.file, password);
@@ -297,15 +323,16 @@ export default function Home() {
 
     for (const row of sendable) {
       const to = effectiveEmail(row);
-      const password = normaliseId(row.pdf.fields?.idNo ?? "");
+      const password = lockIdentifier(row).value;
+      const key = idKey(password);
       const values = placeholderValues(row);
 
-      if (password && sentThisRun.has(password)) {
-        // A copy of this ID already went out this run — skip, don't re-send.
+      if (key && sentThisRun.has(key)) {
+        // A copy of this identifier already went out this run — don't re-send.
         log.push({
           email: to,
           ok: false,
-          error: "Skipped — duplicate ID (first copy already sent)",
+          error: "Skipped — duplicate (first copy already sent)",
         });
         setProgress((p) => ({ ...p, done: p.done + 1 }));
         continue;
@@ -314,7 +341,7 @@ export default function Home() {
       let ok = false;
       let error: string | undefined;
       try {
-        if (!password) throw new Error("No ID number to use as password.");
+        if (!password) throw new Error("No identifier to use as password.");
         const encrypted = await encryptPdf(row.pdf.file, password);
         const text = fillTemplate(template.body, values);
         const res = await fetch("/api/send", {
@@ -335,12 +362,12 @@ export default function Home() {
       } catch (e) {
         error = e instanceof Error ? e.message : "Send failed.";
       }
-      if (ok && password) sentThisRun.add(password);
+      if (ok && key) sentThisRun.add(key);
       log.push({ email: to, ok, error });
       // Append to the persistent send log (actual send attempts only).
       const entry: SendLogEntry = {
         ts: Date.now(),
-        idNo: password,
+        identifier: password,
         name: `${values.Name} ${values.Surname}`.trim(),
         email: to,
         fileName: row.pdf.fileName,
@@ -494,6 +521,46 @@ export default function Home() {
             </div>
           )}
         </div>
+
+        {rows.length > 0 && (
+          <div className="mb-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <ul className="space-y-1.5 text-sm">
+              <li className="flex items-baseline gap-2">
+                <span className="w-8 text-right text-lg font-bold text-emerald-600">
+                  {summary.matchedInExcel}
+                </span>
+                <span className="text-slate-600">
+                  found in Excel that match the PDF
+                </span>
+              </li>
+              <li className="flex items-baseline gap-2">
+                <span className="w-8 text-right text-lg font-bold text-blue-600">
+                  {summary.notInExcelWillSend}
+                </span>
+                <span className="text-slate-600">
+                  PDF(s) not in Excel — will be sent (manual email entered)
+                </span>
+              </li>
+              <li className="flex items-baseline gap-2">
+                <span className="w-8 text-right text-lg font-bold text-indigo-600">
+                  {summary.noIdWillSend}
+                </span>
+                <span className="text-slate-600">
+                  PDF(s) with no ID — will be sent anyway (locked with
+                  passport/manual, manual email entered)
+                </span>
+              </li>
+            </ul>
+            {summary.pendingEmail > 0 && (
+              <p className="mt-2 border-t border-slate-100 pt-2 text-xs text-amber-600">
+                {summary.pendingEmail} not-in-Excel / no-ID row
+                {summary.pendingEmail === 1 ? "" : "s"} still need an email
+                before they&apos;ll send.
+              </p>
+            )}
+          </div>
+        )}
+
         {stats.notfound > 0 && (
           <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
             <input
@@ -513,6 +580,7 @@ export default function Home() {
         <MatcherGrid
           rows={rows}
           onEmailChange={onEmailChange}
+          onPasswordChange={onPasswordChange}
           onToggleExclude={onToggleExclude}
           onPreview={handlePreview}
           sentIds={sentIds}

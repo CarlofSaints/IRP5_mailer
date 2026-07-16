@@ -55,6 +55,38 @@ export function effectiveEmail(row: MatchRow): string {
   return (row.emailOverride ?? row.excel?.email ?? "").trim();
 }
 
+export interface LockIdentifier {
+  value: string; // the actual open-password
+  source: "custom" | "ID number" | "passport" | "alternate ID" | "none";
+}
+
+/**
+ * The identifier used to password-lock this person's PDF, with fallbacks:
+ * a manual override, else the SA ID number, else passport, else alternate ID.
+ * Foreign nationals have no ID_NO but do carry a passport / alternate ID.
+ */
+export function lockIdentifier(row: MatchRow): LockIdentifier {
+  const custom = (row.passwordOverride ?? "").trim();
+  if (custom) return { value: custom, source: "custom" };
+
+  const f = row.pdf.fields;
+  const id = normaliseId(f?.idNo ?? "");
+  if (id) return { value: id, source: "ID number" };
+
+  const passport = (f?.passportNo ?? "").trim();
+  if (passport) return { value: passport, source: "passport" };
+
+  const alt = (f?.altIdNo ?? "").trim();
+  if (alt) return { value: alt, source: "alternate ID" };
+
+  return { value: "", source: "none" };
+}
+
+/** Canonical key for dedup / sent-tracking — works for digits and passports. */
+export function idKey(value: string): string {
+  return (value ?? "").trim().toUpperCase();
+}
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export function isValidEmail(v: string): boolean {
   return EMAIL_RE.test(v.trim());
@@ -71,7 +103,7 @@ export function isValidEmail(v: string): boolean {
 export function isSendable(row: MatchRow): boolean {
   return (
     !row.excluded &&
-    !!normaliseId(row.pdf.fields?.idNo ?? "") &&
+    !!lockIdentifier(row).value &&
     isValidEmail(effectiveEmail(row))
   );
 }

@@ -1,22 +1,25 @@
 "use client";
 import { useState } from "react";
 import type { MatchRow } from "@/lib/types";
-import { effectiveEmail, isValidEmail, isSendable } from "@/lib/match";
+import {
+  effectiveEmail,
+  isValidEmail,
+  isSendable,
+  lockIdentifier,
+  idKey,
+} from "@/lib/match";
 
 interface MatcherGridProps {
   rows: MatchRow[];
   onEmailChange: (pdfId: string, email: string) => void;
+  onPasswordChange: (pdfId: string, password: string) => void;
   onToggleExclude: (pdfId: string) => void;
   /** Encrypt this row's PDF and download it so the user can test the lock. */
   onPreview: (row: MatchRow) => Promise<void>;
-  /** Normalised ID numbers that were successfully sent (from the send log). */
+  /** Canonical identifiers that were successfully sent (from the send log). */
   sentIds: Set<string>;
-  /** Normalised ID numbers appearing on more than one loaded PDF. */
+  /** Canonical identifiers appearing on more than one loaded PDF. */
   dupIdSet: Set<string>;
-}
-
-function normId(v: string): string {
-  return (v ?? "").replace(/\D/g, "");
 }
 
 /** Small paired cell: Excel value on top, PDF value below, with agreement flag. */
@@ -55,6 +58,93 @@ function PairCell({
       <div className="truncate text-sm font-medium text-slate-800" title={pdf}>
         {pdf || <span className="italic text-slate-300">—</span>}
       </div>
+    </div>
+  );
+}
+
+/**
+ * ID column: Excel ID on top (for comparison), and below it the identifier the
+ * PDF will be locked with — the SA ID, or a passport / alternate ID for foreign
+ * nationals — shown in the SAME field, tagged by source, and editable.
+ */
+function IdLockCell({
+  row,
+  onPasswordChange,
+}: {
+  row: MatchRow;
+  onPasswordChange: (pdfId: string, password: string) => void;
+}) {
+  const lock = lockIdentifier(row);
+  const excelId = row.excel?.idNo ?? "";
+  const hasExcel = !!row.excel;
+  const [editing, setEditing] = useState(false);
+
+  const tag =
+    lock.source === "passport"
+      ? "passport"
+      : lock.source === "alternate ID"
+        ? "alt ID"
+        : lock.source === "custom"
+          ? "manual"
+          : "";
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        defaultValue={lock.value}
+        placeholder="ID / passport / password"
+        onBlur={(e) => {
+          onPasswordChange(row.pdf.id, e.target.value);
+          setEditing(false);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          if (e.key === "Escape") setEditing(false);
+        }}
+        className="w-full rounded border border-blue-400 px-2 py-1 text-sm outline-none"
+      />
+    );
+  }
+
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center gap-1">
+        {hasExcel ? (
+          <span
+            className={row.idMatch ? "text-emerald-600" : "text-amber-600"}
+            title={row.idMatch ? "Matches" : "Differs from PDF"}
+          >
+            {row.idMatch ? "✓" : "⚠"}
+          </span>
+        ) : (
+          <span className="text-slate-300">–</span>
+        )}
+        <span className="truncate text-xs text-slate-500" title={excelId}>
+          {excelId || (
+            <span className="italic text-slate-300">no Excel value</span>
+          )}
+        </span>
+      </div>
+      <button
+        onClick={() => setEditing(true)}
+        className="group flex w-full items-center gap-1 text-left"
+        title="Identifier used to open the locked PDF — click to edit"
+      >
+        <span className="truncate text-sm font-medium text-slate-800">
+          {lock.value || (
+            <span className="italic text-slate-300">no ID — click to add</span>
+          )}
+        </span>
+        {tag && (
+          <span className="shrink-0 rounded bg-indigo-100 px-1 text-[10px] font-semibold text-indigo-700">
+            {tag}
+          </span>
+        )}
+        <span className="text-xs text-blue-500 opacity-0 transition-opacity group-hover:opacity-100">
+          ✎
+        </span>
+      </button>
     </div>
   );
 }
@@ -136,6 +226,7 @@ function EmailCell({
 export default function MatcherGrid({
   rows,
   onEmailChange,
+  onPasswordChange,
   onToggleExclude,
   onPreview,
   sentIds,
@@ -185,6 +276,7 @@ export default function MatcherGrid({
             const f = row.pdf.fields;
             const hasExcel = !!row.excel;
             const dimmed = row.excluded ? "opacity-40" : "";
+            const lockKey = idKey(lockIdentifier(row).value);
             return (
               <tr
                 key={row.pdf.id}
@@ -200,21 +292,19 @@ export default function MatcherGrid({
                       → will send (manual)
                     </span>
                   )}
-                  {row.pdf.fields?.idNo &&
-                    sentIds.has(normId(row.pdf.fields.idNo)) && (
-                      <span className="mt-1 block text-[10px] font-semibold text-emerald-600">
-                        ✓ already sent
-                      </span>
-                    )}
-                  {row.pdf.fields?.idNo &&
-                    dupIdSet.has(normId(row.pdf.fields.idNo)) && (
-                      <span
-                        className="mt-1 block text-[10px] font-semibold text-orange-600"
-                        title="This ID number appears on more than one loaded PDF"
-                      >
-                        ⚠ duplicate ID
-                      </span>
-                    )}
+                  {lockKey && sentIds.has(lockKey) && (
+                    <span className="mt-1 block text-[10px] font-semibold text-emerald-600">
+                      ✓ already sent
+                    </span>
+                  )}
+                  {lockKey && dupIdSet.has(lockKey) && (
+                    <span
+                      className="mt-1 block text-[10px] font-semibold text-orange-600"
+                      title="This identifier appears on more than one loaded PDF"
+                    >
+                      ⚠ duplicate
+                    </span>
+                  )}
                   {row.pdf.error && (
                     <p className="mt-1 max-w-[10rem] text-[10px] text-rose-500">
                       {row.pdf.error}
@@ -237,13 +327,8 @@ export default function MatcherGrid({
                     hasExcel={hasExcel}
                   />
                 </td>
-                <td className="px-3 py-2 max-w-[10rem]">
-                  <PairCell
-                    excel={row.excel?.idNo ?? ""}
-                    pdf={f?.idNo ?? ""}
-                    match={row.idMatch}
-                    hasExcel={hasExcel}
-                  />
+                <td className="px-3 py-2 max-w-[11rem]">
+                  <IdLockCell row={row} onPasswordChange={onPasswordChange} />
                 </td>
                 <td className="px-3 py-2 max-w-[14rem]">
                   <EmailCell row={row} onEmailChange={onEmailChange} />
@@ -255,11 +340,11 @@ export default function MatcherGrid({
                   >
                     {row.pdf.fileName}
                   </span>
-                  {row.pdf.fields?.idNo && (
+                  {lockKey && (
                     <button
                       onClick={() => runPreview(row)}
                       disabled={previewingId === row.pdf.id}
-                      title="Download a password-locked copy to test it opens with the ID number"
+                      title="Download a password-locked copy to test it opens with the identifier shown"
                       className="mt-1 inline-flex items-center gap-1 rounded border border-slate-300 px-1.5 py-0.5 text-[11px] text-slate-600 hover:border-blue-400 hover:text-blue-600 disabled:opacity-50"
                     >
                       {previewingId === row.pdf.id ? "Locking…" : "🔒 Test-lock"}

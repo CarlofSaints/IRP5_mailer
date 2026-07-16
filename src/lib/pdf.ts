@@ -65,6 +65,8 @@ export async function extractIrp5Fields(file: File): Promise<Irp5Fields> {
     );
   }
   const idNo = xmlValue(xml, "ID_NO");
+  const passportNo = xmlValue(xml, "PASSPORT_NO");
+  const altIdNo = xmlValue(xml, "AlternateIdentificationNo");
   const surname = xmlValue(xml, "SURNAME");
   const fullNames = xmlValue(xml, "FULL_NAMES");
   const initials = xmlValue(xml, "INITIALS");
@@ -73,7 +75,7 @@ export async function extractIrp5Fields(file: File): Promise<Irp5Fields> {
   if (!idNo && !surname) {
     throw new Error("Could not read ID number or surname from the form data.");
   }
-  return { idNo, surname, fullNames, initials, certNo };
+  return { idNo, passportNo, altIdNo, surname, fullNames, initials, certNo };
 }
 
 /**

@@ -23,7 +23,8 @@ export function placeholderValues(row: MatchRow): Record<string, string> {
   return {
     Name: row.excel?.name || f?.fullNames || "",
     Surname: row.excel?.surname || f?.surname || "",
-    ID: f?.idNo || row.excel?.idNo || "",
+    // Falls back to passport / alternate ID for foreign nationals with no SA ID.
+    ID: f?.idNo || f?.passportNo || f?.altIdNo || row.excel?.idNo || "",
     Email: effectiveEmail(row),
   };
 }
